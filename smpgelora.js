@@ -989,20 +989,23 @@ async function loadUsers(){
 }
 
 function editUser(id){
-    const u = usersList.find(x => x.id === id);
+    const u = usersList.find(x => String(x.id) === String(id));
     if(!u) return;
     document.getElementById('user-edit-id').value = u.id;
     document.getElementById('new-nama').value = u.nama || '';
     document.getElementById('new-username').value = u.username || '';
-    document.getElementById('new-password').value = '';
-    document.getElementById('new-password').placeholder = 'Password (kosongkan jika tidak diubah)';
+    document.getElementById('new-username').disabled = true;
+    const pw = document.getElementById('new-password');
+    if(pw){
+        pw.value = '';
+        pw.placeholder = 'Password tidak diubah saat edit';
+        pw.disabled = true;
+    }
     document.getElementById('new-role').value = u.role === 'superadmin' ? 'superadmin' : 'admin';
     document.getElementById('new-jenjang').value = normalizeJenjang(u.jenjang);
     document.getElementById('user-form-title').textContent = '✏️ Edit User';
     document.getElementById('btn-simpan-user').textContent = '🔄 Update User';
     document.getElementById('btn-batal-user').style.display = 'block';
-    // Username tidak diubah saat edit agar tidak bentrok session
-    document.getElementById('new-username').disabled = true;
 }
 
 function batalEditUser(){
@@ -1010,13 +1013,32 @@ function batalEditUser(){
     document.getElementById('new-nama').value = '';
     document.getElementById('new-username').value = '';
     document.getElementById('new-username').disabled = false;
-    document.getElementById('new-password').value = '';
-    document.getElementById('new-password').placeholder = 'Password';
+    const pw = document.getElementById('new-password');
+    if(pw){
+        pw.value = '';
+        pw.placeholder = 'Password awal (min. 6 karakter)';
+        pw.disabled = false;
+    }
     document.getElementById('new-role').value = 'admin';
     document.getElementById('new-jenjang').value = 'smp';
     document.getElementById('user-form-title').textContent = '➕ Tambah User Baru';
     document.getElementById('btn-simpan-user').textContent = '💾 Simpan User';
     document.getElementById('btn-batal-user').style.display = 'none';
+}
+
+async function invokeUserAdminFunction(functionName, body){
+    const { data, error } = await _supabase.functions.invoke(functionName, { body });
+    if(!error) return data || {};
+
+    let detail = error.message || String(error);
+    try{
+        const context = error.context;
+        if(context && typeof context.json === 'function'){
+            const payload = await context.json();
+            if(payload?.error) detail = payload.error;
+        }
+    }catch(_){}
+    throw new Error(detail);
 }
 
 async function simpanUser(){
@@ -1027,26 +1049,86 @@ async function simpanUser(){
     const editId = document.getElementById('user-edit-id').value;
     const nama = document.getElementById('new-nama').value.trim();
     const username = document.getElementById('new-username').value.trim().toLowerCase();
+    const passwordEl = document.getElementById('new-password');
+    const password = passwordEl ? passwordEl.value : '';
     const role = document.getElementById('new-role').value;
     let jenjang = normalizeJenjang(document.getElementById('new-jenjang')?.value || 'all');
-    if (role === 'superadmin') jenjang = 'all';
+    if(role === 'superadmin') jenjang = 'all';
 
-    if(!editId){
+    if(!nama || !username){
         return Swal.fire({
-            icon:'info',
-            title:'Pembuatan akun Auth',
-            text:'Buat akun baru melalui Supabase Authentication terlebih dahulu. Password tidak lagi disimpan di tabel aplikasi.',
+            icon:'warning',
+            title:'Data Belum Lengkap',
+            text:'Nama dan Username wajib diisi!',
             confirmButtonColor:'#f97316'
         });
     }
 
-    if(!nama || !username){
-        return Swal.fire({
-            icon: 'warning',
-            title: 'Gagal',
-            text: 'Nama dan Username wajib diisi!',
-            confirmButtonColor: '#f97316'
+    if(!editId){
+        if(!/^[a-z0-9._-]{3,32}$/.test(username)){
+            return Swal.fire({
+                icon:'warning',
+                title:'Username Tidak Valid',
+                text:'Username 3–32 karakter dan hanya boleh berisi huruf kecil, angka, titik, garis bawah, atau tanda minus.',
+                confirmButtonColor:'#f97316'
+            });
+        }
+        if(password.length < 6 || password.length > 72){
+            return Swal.fire({
+                icon:'warning',
+                title:'Password Tidak Valid',
+                text:'Password harus 6–72 karakter.',
+                confirmButtonColor:'#f97316'
+            });
+        }
+
+        const confirm = await Swal.fire({
+            title:'Buat User Baru?',
+            html:`<div style="text-align:left">Nama: <b>${escapeHtml(nama)}</b><br>Username: <b>@${escapeHtml(username)}</b><br>Role: <b>${escapeHtml(role)}</b><br>Jenjang: <b>${escapeHtml(getJenjangLabel(jenjang))}</b></div>`,
+            icon:'question',
+            showCancelButton:true,
+            confirmButtonColor:'#21a366',
+            cancelButtonColor:'#6c757d',
+            confirmButtonText:'Ya, Buat User',
+            cancelButtonText:'Batal'
         });
+        if(!confirm.isConfirmed) return;
+
+        try{
+            Swal.fire({
+                title:'Membuat User...',
+                text:'Akun Authentication dan profil aplikasi sedang dibuat.',
+                allowOutsideClick:false,
+                allowEscapeKey:false,
+                didOpen:()=>Swal.showLoading()
+            });
+
+            await invokeUserAdminFunction('admin-create-user', {
+                nama,
+                username,
+                password,
+                role,
+                jenjang
+            });
+
+            batalEditUser();
+            await loadUsers();
+
+            Swal.fire({
+                icon:'success',
+                title:'User Berhasil Dibuat',
+                html:`Akun <b>@${escapeHtml(username)}</b> sudah aktif dan siap login.<br><small style="color:var(--muted)">Password tidak disimpan di tabel aplikasi.</small>`,
+                confirmButtonColor:'#21a366'
+            });
+        }catch(err){
+            Swal.fire({
+                icon:'error',
+                title:'Gagal Membuat User',
+                text:err.message || String(err),
+                confirmButtonColor:'#e53935'
+            });
+        }
+        return;
     }
 
     try{
@@ -1065,19 +1147,19 @@ async function simpanUser(){
         }
 
         Swal.fire({
-            icon: 'success',
-            title: 'Berhasil',
-            text: `User ${nama} diperbarui (${getJenjangLabel(jenjang)}).`,
-            confirmButtonColor: '#21a366'
+            icon:'success',
+            title:'Berhasil',
+            text:`User ${nama} diperbarui (${getJenjangLabel(jenjang)}).`,
+            confirmButtonColor:'#21a366'
         });
         batalEditUser();
         await loadUsers();
     }catch(err){
         Swal.fire({
-            icon: 'error',
-            title: 'Gagal Menyimpan',
-            text: err.message || String(err),
-            confirmButtonColor: '#e53935'
+            icon:'error',
+            title:'Gagal Menyimpan',
+            text:err.message || String(err),
+            confirmButtonColor:'#e53935'
         });
     }
 }
@@ -1094,25 +1176,44 @@ async function hapusUser(id, namaUser){
     }
 
     const confirm = await Swal.fire({
-        title: 'Hapus User?',
-        text: `User ${namaUser} tidak akan bisa login lagi.`,
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonColor: '#e53935',
-        cancelButtonColor: '#6c757d',
-        confirmButtonText: 'Ya, Hapus',
-        cancelButtonText: 'Batal'
+        title:'Hapus User?',
+        text:`User ${namaUser} akan dihapus dari Authentication dan aplikasi.`,
+        icon:'warning',
+        showCancelButton:true,
+        confirmButtonColor:'#e53935',
+        cancelButtonColor:'#6c757d',
+        confirmButtonText:'Ya, Hapus',
+        cancelButtonText:'Batal'
     });
-    if(confirm.isConfirmed){
-        const { error } = await _supabase.from('users').delete().eq('id', id);
-        if(!error){
-            await catatLog('HAPUS', `Menghapus user: ${namaUser}`);
-            Swal.fire('Terhapus', 'User berhasil dihapus.', 'success');
-            if(document.getElementById('user-edit-id').value === String(id)) batalEditUser();
-            await loadUsers();
-        } else {
-            Swal.fire('Gagal', 'Gagal menghapus user: ' + error.message, 'error');
-        }
+    if(!confirm.isConfirmed) return;
+
+    try{
+        Swal.fire({
+            title:'Menghapus User...',
+            text:'Menghapus akun Authentication dan profil aplikasi.',
+            allowOutsideClick:false,
+            allowEscapeKey:false,
+            didOpen:()=>Swal.showLoading()
+        });
+
+        await invokeUserAdminFunction('admin-delete-user', { id });
+
+        if(document.getElementById('user-edit-id').value === String(id)) batalEditUser();
+        await loadUsers();
+
+        Swal.fire({
+            icon:'success',
+            title:'User Terhapus',
+            text:`User ${namaUser} berhasil dihapus.`,
+            confirmButtonColor:'#21a366'
+        });
+    }catch(err){
+        Swal.fire({
+            icon:'error',
+            title:'Gagal Menghapus User',
+            text:err.message || String(err),
+            confirmButtonColor:'#e53935'
+        });
     }
 }
 
